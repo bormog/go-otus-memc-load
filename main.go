@@ -96,8 +96,8 @@ func insertDeviceApplications(app *deviceApplications, memcacheClient *memcache.
 	return nil
 }
 
-func readFile(filePath string, c chan string) {
-	defer close(c)
+func readFile(filePath string, c chan string, wg *sync.WaitGroup) {
+	defer wg.Done()
 
 	log.Printf("Processing file: %s", filePath)
 	file, err := os.Open(filePath)
@@ -138,14 +138,14 @@ func readFile(filePath string, c chan string) {
 	log.Printf("Finish processing file %s: %d lines read...", filePath, count)
 }
 
-func newMemcacheClient(address string, MaxIdleConns int, timeout int) *memcache.Client {
+func newMemcacheClient(address string, maxIdleConns int, timeout int) *memcache.Client {
 	client := memcache.New(address)
-	client.MaxIdleConns = MaxIdleConns
+	client.MaxIdleConns = maxIdleConns
 	client.Timeout = time.Duration(timeout) * time.Millisecond
 	return client
 }
 
-func readLine(in chan string, out chan bool,  wg *sync.WaitGroup, i int, memcacheClient *memcache.Client) {
+func readLine(in chan string, wg *sync.WaitGroup, i int, memcacheClient *memcache.Client) {
 	var totalCount int
 	var errorCount int
 
@@ -166,25 +166,25 @@ func readLine(in chan string, out chan bool,  wg *sync.WaitGroup, i int, memcach
 			log.Printf("[%d], memc error %s", i, err)
 		}
 
-		if totalCount % 10000 == 0 {
+		if totalCount%10000 == 0 {
 			log.Printf("[%d], processed %d lines, errors %d", i, totalCount, errorCount)
 		}
 	}
-	out <- true
 	log.Printf("[%d] processed %d lines with %d errors", i, totalCount, errorCount)
 }
 
 func main() {
 	// todo arguments parser
 	// todo write in memc by device type
-	// todo use proto to serialize
 	// todo calculate error rate
 	// todo calculate execution time
 	// todo work with many files
-	// todo rename file afer its done
+	// todo rename file after its done
 
 	var numCPU = runtime.NumCPU()
-	var wg sync.WaitGroup
+	var wp sync.WaitGroup
+	var wc sync.WaitGroup
+
 	var memcacheClient = newMemcacheClient("127.0.0.1: 33014", numCPU*2, 500)
 	var filePath = "/Users/teh_momokox/python/memc_load/memc_load/test_data/.1.tsv.gz"
 	//filePath = "/Users/teh_momokox/python/memc_load/memc_load/data/appsinstalled/20170929000000.tsv.gz"
@@ -192,18 +192,16 @@ func main() {
 	log.Printf("Number of CPU = %d", numCPU)
 
 	lineChan := make(chan string)
-	resChan := make(chan bool)
 
-	go readFile(filePath, lineChan)
-
-	for i := 0; i < numCPU; i++ {
-		wg.Add(1)
-		go readLine(lineChan, resChan, &wg, i, memcacheClient)
-	}
+	wp.Add(1)
+	go readFile(filePath, lineChan, &wp)
 
 	for i := 0; i < numCPU; i++ {
-		res := <- resChan
-		log.Print(res)
+		wc.Add(1)
+		go readLine(lineChan, &wc, i, memcacheClient)
 	}
-	wg.Wait()
+
+	wp.Wait()
+	close(lineChan)
+	wc.Wait()
 }
