@@ -4,12 +4,14 @@ import (
 	"bufio"
 	"compress/gzip"
 	"errors"
+	"flag"
 	"fmt"
 	"github.com/bradfitz/gomemcache/memcache"
 	"github.com/golang/protobuf/proto"
 	"log"
 	"memc-load/appsinstalled"
 	"os"
+	"path/filepath"
 	"runtime"
 	"strconv"
 	"strings"
@@ -23,6 +25,43 @@ type deviceApplications struct {
 	lat        float64
 	lon        float64
 	apps       []uint32
+}
+
+type arguments struct {
+	dryRun bool
+	log string
+
+	pattern string
+
+	idfa string
+	gaid string
+	adid string
+	dvid string
+
+	memcTimeout int
+	memcMaxIdleConns int
+
+}
+
+func parseArguments() arguments {
+	args := arguments{}
+	flag.BoolVar(&args.dryRun,"dry", true, "dry run")
+	flag.StringVar(&args.log, "log", "", "log file")
+
+	flag.StringVar(&args.pattern, "pattern", "./data/appsinstalled/*.tsv.gz", "pattern for files")
+
+	flag.StringVar(&args.idfa, "idfa", "127.0.0.1:33013", "idfa memc address")
+	flag.StringVar(&args.gaid, "gaid", "127.0.0.1:33014", "gaid memc address")
+	flag.StringVar(&args.adid, "adid", "127.0.0.1:33015", "adid memc address")
+	flag.StringVar(&args.dvid, "dvid", "127.0.0.1:33016", "dvid memc address")
+
+	flag.IntVar(&args.memcTimeout, "timeout", 500, "memc timeout in ms")
+	flag.IntVar(&args.memcMaxIdleConns, "maxcon", 2 * runtime.NumCPU(), "memc max connecion")
+
+
+	flag.Parse()
+
+	return args
 }
 
 func parseDeviceApplications(line string) (*deviceApplications, error) {
@@ -106,12 +145,6 @@ func readFile(filePath string, c chan string, wg *sync.WaitGroup) {
 		return
 	}
 
-	defer func() {
-		if err := file.Close(); err != nil {
-			log.Printf("Cant close file %s", filePath)
-		}
-	}()
-
 	gz, err := gzip.NewReader(file)
 	if err != nil {
 		log.Fatal("error while using gzip: ", filePath, err)
@@ -120,7 +153,7 @@ func readFile(filePath string, c chan string, wg *sync.WaitGroup) {
 
 	defer func() {
 		if err := file.Close(); err != nil {
-			log.Printf("Cant close file %s", filePath)
+			log.Printf("Cant close %s, err = %s", filePath, err)
 		}
 	}()
 
@@ -138,14 +171,7 @@ func readFile(filePath string, c chan string, wg *sync.WaitGroup) {
 	log.Printf("Finish processing file %s: %d lines read...", filePath, count)
 }
 
-func newMemcacheClient(address string, maxIdleConns int, timeout int) *memcache.Client {
-	client := memcache.New(address)
-	client.MaxIdleConns = maxIdleConns
-	client.Timeout = time.Duration(timeout) * time.Millisecond
-	return client
-}
-
-func readLine(in chan string, wg *sync.WaitGroup, i int, memcacheClient *memcache.Client) {
+func readLine(in chan string, wg *sync.WaitGroup, i int, memcMap map[string] *memcache.Client) {
 	var totalCount int
 	var errorCount int
 
@@ -160,48 +186,82 @@ func readLine(in chan string, wg *sync.WaitGroup, i int, memcacheClient *memcach
 			continue
 		}
 
-		err = insertDeviceApplications(app, memcacheClient, 5)
+		memcClient, ok := memcMap[app.deviceType]
+		if ok == false {
+			log.Printf("[%d] memc client not found for device type = %s", i, app.deviceType)
+		}
+		err = insertDeviceApplications(app, memcClient, 5)
 		if err != nil {
 			errorCount += 1
 			log.Printf("[%d], memc error %s", i, err)
 		}
 
-		if totalCount%10000 == 0 {
+		if totalCount%5000 == 0 {
 			log.Printf("[%d], processed %d lines, errors %d", i, totalCount, errorCount)
 		}
 	}
 	log.Printf("[%d] processed %d lines with %d errors", i, totalCount, errorCount)
 }
 
+func newMemcacheClient(address string, maxIdleConns int, timeout int) *memcache.Client {
+	client := memcache.New(address)
+	client.MaxIdleConns = maxIdleConns
+	client.Timeout = time.Duration(timeout) * time.Millisecond
+	return client
+}
+
+func getMemcacheMap(args arguments) map[string] *memcache.Client{
+	memcacheMap := make(map[string] *memcache.Client)
+	memcacheMap["idfa"] = newMemcacheClient(args.idfa, args.memcMaxIdleConns, args.memcTimeout)
+	memcacheMap["gaid"] = newMemcacheClient(args.gaid, args.memcMaxIdleConns, args.memcTimeout)
+	memcacheMap["adid"] = newMemcacheClient(args.adid, args.memcMaxIdleConns, args.memcTimeout)
+	memcacheMap["dvid"] = newMemcacheClient(args.dvid, args.memcMaxIdleConns, args.memcTimeout)
+	return memcacheMap
+}
+
+
 func main() {
-	// todo arguments parser
-	// todo write in memc by device type
+	// write log in file
 	// todo calculate error rate
-	// todo calculate execution time
-	// todo work with many files
 	// todo rename file after its done
 
+	start := time.Now()
+
+	args := parseArguments()
+	log.Printf("Memc loader started with options: %+v", args)
+
+	matches, err := filepath.Glob(args.pattern)
+	if err != nil {
+		log.Printf("Some error expected %s", err)
+		return
+	}
+
+	if len(matches) == 0 {
+		log.Printf("No any file found for pattern = %s", args.pattern)
+		return
+	}
+
+	lineChan := make(chan string)
 	var numCPU = runtime.NumCPU()
 	var wp sync.WaitGroup
 	var wc sync.WaitGroup
 
-	var memcacheClient = newMemcacheClient("127.0.0.1: 33014", numCPU*2, 500)
-	var filePath = "/Users/teh_momokox/python/memc_load/memc_load/test_data/.1.tsv.gz"
-	//filePath = "/Users/teh_momokox/python/memc_load/memc_load/data/appsinstalled/20170929000000.tsv.gz"
+	memcMap := getMemcacheMap(args)
 
-	log.Printf("Number of CPU = %d", numCPU)
-
-	lineChan := make(chan string)
-
-	wp.Add(1)
-	go readFile(filePath, lineChan, &wp)
+	for _, filePath := range matches {
+		wp.Add(1)
+		go readFile(filePath, lineChan, &wp)
+	}
 
 	for i := 0; i < numCPU; i++ {
 		wc.Add(1)
-		go readLine(lineChan, &wc, i, memcacheClient)
+		go readLine(lineChan, &wc, i, memcMap)
 	}
 
 	wp.Wait()
 	close(lineChan)
 	wc.Wait()
+
+	execTime := time.Since(start)
+	log.Printf("Execution time = %s", execTime)
 }
