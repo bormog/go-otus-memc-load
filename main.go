@@ -12,6 +12,7 @@ import (
 	"memc-load/appsinstalled"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strconv"
 	"strings"
 	"sync"
@@ -67,17 +68,17 @@ func (r *results) ErrorRate() float64 {
 
 func parseArguments() arguments {
 	args := arguments{}
-	flag.BoolVar(&args.dryRun, "dry", false, "dry run")
+	flag.BoolVar(&args.dryRun, "dry", true, "dry run")
 	flag.StringVar(&args.log, "log", "", "log file")
 
-	flag.StringVar(&args.pattern, "pattern", "./data/test/*.tsv.gz", "pattern for files")
+	flag.StringVar(&args.pattern, "pattern", "./data/appsinstalled/[^.]*.tsv.gz", "pattern for files")
 
 	flag.StringVar(&args.idfa, "idfa", "127.0.0.1:33013", "idfa memc address")
 	flag.StringVar(&args.gaid, "gaid", "127.0.0.1:33014", "gaid memc address")
 	flag.StringVar(&args.adid, "adid", "127.0.0.1:33015", "adid memc address")
 	flag.StringVar(&args.dvid, "dvid", "127.0.0.1:33016", "dvid memc address")
 
-	flag.IntVar(&args.workersCount, "wc", 4, "workers count")
+	flag.IntVar(&args.workersCount, "wc", runtime.NumCPU(), "workers count")
 
 	flag.IntVar(&args.memcTimeout, "timeout", 500, "memc timeout in ms")
 
@@ -219,7 +220,7 @@ func consumer(in chan string, memcMap map[string]*memcache.Client, result *resul
 			}
 		}
 
-		if totalCount%5000 == 0 {
+		if totalCount%10000 == 0 {
 			log.Printf("[%d] ... processed %d lines, %d errors", i, totalCount, errorCount)
 		}
 	}
@@ -244,16 +245,19 @@ func getMemcacheClientMap(args arguments) map[string]*memcache.Client {
 	return memcacheMap
 }
 
+func dotRenameFile(filePath string, dryRun bool) {
+	path, name := filepath.Split(filePath)
+	if dryRun == false {
+		err := os.Rename(filePath, filepath.Join(path, "." + name))
+		if err != nil {
+			log.Printf("Cant rename file %s, err = %s", filePath, err)
+		}
+	}
+}
+
 func main() {
 	// todo write log in file
-	// todo rename file after its done
 	// todo readme
-
-	// 4 workers, dry = false, Execution time = 49m45.030151062s
-	// 16 workers, dry = false, Execution time = 32m13.449286s
-	// 32 workers, dry = false, Execution time = 23m32.784553634s
-	// 64 workers, dry = false, Execution time = 19m46.401239576s
-	// 128 workers, dry = false, Execution time = 16m42.661229793s
 
 	start := time.Now()
 
@@ -284,6 +288,7 @@ func main() {
 		wp.Add(1)
 		go func(f string, c chan string, i int) {
 			defer wp.Done()
+			defer dotRenameFile(f, args.dryRun)
 			producer(f, c, i)
 		}(filePath, lineChan, i)
 	}
