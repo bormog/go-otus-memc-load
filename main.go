@@ -10,6 +10,7 @@ import (
 	"github.com/golang/protobuf/proto"
 	"io"
 	"log"
+	"math/rand"
 	"memc-load/appsinstalled"
 	"os"
 	"path/filepath"
@@ -20,7 +21,11 @@ import (
 	"time"
 )
 
-const normalErrorRate = 0.01
+const (
+	normalErrorRate = 0.01
+	maxRetryCount   = 5
+	initRetryDelay  = 100
+)
 
 type deviceApplications struct {
 	deviceType string
@@ -149,8 +154,7 @@ func parseDeviceApplications(line string) (*deviceApplications, error) {
 	}, nil
 }
 
-func insertDeviceApplications(app *deviceApplications, memcacheClient *memcache.Client, maxRetryCount int) error {
-	var retryDelay = 100
+func insertDeviceApplications(app *deviceApplications, memcacheClient *memcache.Client) error {
 	var err error
 
 	key := fmt.Sprintf("%s:%s", app.deviceType, app.deviceType)
@@ -160,13 +164,14 @@ func insertDeviceApplications(app *deviceApplications, memcacheClient *memcache.
 		return errors.New(fmt.Sprintf("Failed proto marshal, err %s", err))
 	}
 
+	delay := initRetryDelay
 	for attempt := 0; attempt < maxRetryCount; attempt++ {
 		err = memcacheClient.Set(&memcache.Item{Key: key, Value: packed})
 		if err == nil {
 			break
 		}
-		retryDelay = retryDelay * 2
-		time.Sleep(time.Duration(retryDelay) * time.Millisecond)
+		delay = 2*delay + rand.Intn(50)
+		time.Sleep(time.Duration(delay) * time.Millisecond)
 	}
 
 	if err != nil {
@@ -231,7 +236,7 @@ func consumer(in chan string, memcMap map[string]*memcache.Client, result *resul
 				log.Printf("[%d] memc client not found for device type = %s", i, app.deviceType)
 			}
 
-			err = insertDeviceApplications(app, memcClient, 5)
+			err = insertDeviceApplications(app, memcClient)
 			if err != nil {
 				errorCount += 1
 				log.Printf("[%d], memc err = %s", i, err)
