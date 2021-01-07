@@ -18,6 +18,8 @@ import (
 	"time"
 )
 
+const normalErrorRate = 0.01
+
 type deviceApplications struct {
 	deviceType string
 	deviceId   string
@@ -43,19 +45,39 @@ type arguments struct {
 	memcMaxIdleConns int
 }
 
+type results struct {
+	sync.Mutex
+	processed int
+	errors int
+}
+
+func (r *results) Add (p int, e int ) {
+	r.Lock()
+	r.processed += p
+	r.errors += e
+	r.Unlock()
+}
+
+func (r *results) ErrorRate() float64 {
+	if r.processed == 0 {
+		return 0.0
+	}
+	return float64(r.errors) / float64(r.processed)
+}
+
 func parseArguments() arguments {
 	args := arguments{}
 	flag.BoolVar(&args.dryRun, "dry", false, "dry run")
 	flag.StringVar(&args.log, "log", "", "log file")
 
-	flag.StringVar(&args.pattern, "pattern", "./data/appsinstalled/*.tsv.gz", "pattern for files")
+	flag.StringVar(&args.pattern, "pattern", "./data/test/*.tsv.gz", "pattern for files")
 
 	flag.StringVar(&args.idfa, "idfa", "127.0.0.1:33013", "idfa memc address")
 	flag.StringVar(&args.gaid, "gaid", "127.0.0.1:33014", "gaid memc address")
 	flag.StringVar(&args.adid, "adid", "127.0.0.1:33015", "adid memc address")
 	flag.StringVar(&args.dvid, "dvid", "127.0.0.1:33016", "dvid memc address")
 
-	flag.IntVar(&args.workersCount, "wc", 32, "workers count")
+	flag.IntVar(&args.workersCount, "wc", 4, "workers count")
 
 	flag.IntVar(&args.memcTimeout, "timeout", 500, "memc timeout in ms")
 
@@ -171,7 +193,7 @@ func producer(filePath string, out chan string, i int) {
 	log.Printf("[%d] finish processing file %s, lines read = %d", i, filePath, count)
 }
 
-func consumer(in chan string, memcMap map[string]*memcache.Client, i int, dryRun bool) {
+func consumer(in chan string, memcMap map[string]*memcache.Client, result *results, i int, dryRun bool) {
 	var totalCount int
 	var errorCount int
 
@@ -201,6 +223,7 @@ func consumer(in chan string, memcMap map[string]*memcache.Client, i int, dryRun
 			log.Printf("[%d] ... processed %d lines, %d errors", i, totalCount, errorCount)
 		}
 	}
+	result.Add(totalCount, errorCount)
 	log.Printf("[%d] processed %d lines, %d errors", i, totalCount, errorCount)
 }
 
@@ -223,12 +246,14 @@ func getMemcacheClientMap(args arguments) map[string]*memcache.Client {
 
 func main() {
 	// todo write log in file
-	// todo calculate error rate
 	// todo rename file after its done
+	// todo readme
 
 	// 4 workers, dry = false, Execution time = 49m45.030151062s
 	// 16 workers, dry = false, Execution time = 32m13.449286s
 	// 32 workers, dry = false, Execution time = 23m32.784553634s
+	// 64 workers, dry = false, Execution time = 19m46.401239576s
+	// 128 workers, dry = false, Execution time = 16m42.661229793s
 
 	start := time.Now()
 
@@ -251,6 +276,8 @@ func main() {
 	var wp sync.WaitGroup
 	var wc sync.WaitGroup
 
+	result := &results{}
+
 	memcMap := getMemcacheClientMap(args)
 
 	for i, filePath := range matches {
@@ -265,13 +292,20 @@ func main() {
 		wc.Add(1)
 		go func(i int) {
 			defer wc.Done()
-			consumer(lineChan, memcMap, i, args.dryRun)
+			consumer(lineChan, memcMap, result, i, args.dryRun)
 		}(i)
 	}
 
 	wp.Wait()
 	close(lineChan)
 	wc.Wait()
+
+	log.Printf("Total processed %d lines", result.processed)
+	if result.ErrorRate() < normalErrorRate {
+		log.Printf("Acceptable error rate: %f. Successfull load", result.ErrorRate())
+	} else {
+		log.Printf("High error rate: %f > %f. Failed load", result.ErrorRate(), normalErrorRate)
+	}
 
 	execTime := time.Since(start)
 	log.Printf("Execution time = %s", execTime)
