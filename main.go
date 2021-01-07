@@ -36,19 +36,12 @@ type deviceApplications struct {
 }
 
 type arguments struct {
-	dryRun bool
-	log    string
-
-	pattern string
-
-	idfa string
-	gaid string
-	adid string
-	dvid string
-
+	dryRun       bool
+	log          string
+	pattern      string
+	addresses    map[string]string
 	workersCount int
-
-	memcTimeout int
+	memcTimeout  int
 }
 
 type results struct {
@@ -100,16 +93,22 @@ func parseArguments() arguments {
 
 	flag.StringVar(&args.pattern, "pattern", "./data/appsinstalled/[^.]*.tsv.gz", "pattern for files")
 
-	flag.StringVar(&args.idfa, "idfa", "127.0.0.1:33013", "idfa memc address")
-	flag.StringVar(&args.gaid, "gaid", "127.0.0.1:33014", "gaid memc address")
-	flag.StringVar(&args.adid, "adid", "127.0.0.1:33015", "adid memc address")
-	flag.StringVar(&args.dvid, "dvid", "127.0.0.1:33016", "dvid memc address")
+	idfa := flag.String("idfa", "127.0.0.1:33013", "idfa memcache address")
+	gaid := flag.String("gaid", "127.0.0.1:33014", "idfa memcache address")
+	adid := flag.String("adid", "127.0.0.1:33015", "idfa memcache address")
+	dvid := flag.String("dvid", "127.0.0.1:33016", "idfa memcache address")
 
 	flag.IntVar(&args.workersCount, "wc", runtime.NumCPU(), "workers count")
-
-	flag.IntVar(&args.memcTimeout, "timeout", 500, "memc timeout in ms")
+	flag.IntVar(&args.memcTimeout, "timeout", 500, "memcache timeout in ms")
 
 	flag.Parse()
+
+	args.addresses = map[string]string{
+		"idfa": *idfa,
+		"gaid": *gaid,
+		"adid": *adid,
+		"dvid": *dvid,
+	}
 
 	return args
 }
@@ -286,13 +285,6 @@ func main() {
 	args := parseArguments()
 	setupLog(args.log)
 
-	addresses := map[string]string{
-		"idfa": args.idfa,
-		"gaid": args.gaid,
-		"adid": args.adid,
-		"dvid": args.dvid,
-	}
-
 	log.Printf("Memc loader started with options: %+v", args)
 
 	matches, err := filepath.Glob(args.pattern)
@@ -311,7 +303,7 @@ func main() {
 
 	result := &results{}
 
-	mp := NewMemcachePool(addresses, args.memcTimeout, 2*args.workersCount)
+	mp := NewMemcachePool(args.addresses, args.memcTimeout, 2*args.workersCount)
 
 	for i, filePath := range matches {
 		wp.Add(1)
