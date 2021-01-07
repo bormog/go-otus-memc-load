@@ -58,10 +58,10 @@ type results struct {
 	errors    int
 }
 
-func (r *results) Inc(p int, e int) {
+func (r *results) Inc(processed int, errors int) {
 	r.Lock()
-	r.processed += p
-	r.errors += e
+	r.processed += processed
+	r.errors += errors
 	r.Unlock()
 }
 
