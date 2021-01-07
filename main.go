@@ -58,7 +58,7 @@ type results struct {
 	errors    int
 }
 
-func (r *results) Add(p int, e int) {
+func (r *results) Inc(p int, e int) {
 	r.Lock()
 	r.processed += p
 	r.errors += e
@@ -186,14 +186,12 @@ func producer(filePath string, out chan string, i int) {
 
 	file, err := os.Open(filePath)
 	if err != nil {
-		log.Printf("[%d] error while opening file %s, err =  %s", i, filePath, err)
-		os.Exit(1)
+		log.Fatalf("[%d] error while opening file %s, err =  %s", i, filePath, err)
 	}
 
 	gz, err := gzip.NewReader(file)
 	if err != nil {
-		log.Printf("[%d] error while using gzip file %s, err = %s", i, filePath, err)
-		os.Exit(1)
+		log.Fatalf("[%d] error while using gzip file %s, err = %s", i, filePath, err)
 	}
 
 	defer func() {
@@ -211,7 +209,6 @@ func producer(filePath string, out chan string, i int) {
 
 	if err := scanner.Err(); err != nil {
 		log.Printf("[%d] error while reading file %s, err = %s", i, filePath, err)
-		os.Exit(1)
 	}
 
 	log.Printf("[%d] finish processing file %s, lines read = %d", i, filePath, count)
@@ -247,7 +244,7 @@ func consumer(in chan string, memcMap map[string]*memcache.Client, result *resul
 			log.Printf("[%d] ... processed %d lines, %d errors", i, totalCount, errorCount)
 		}
 	}
-	result.Add(totalCount, errorCount)
+	result.Inc(totalCount, errorCount)
 	log.Printf("[%d] processed %d lines, %d errors", i, totalCount, errorCount)
 }
 
@@ -289,13 +286,11 @@ func main() {
 
 	matches, err := filepath.Glob(args.pattern)
 	if err != nil {
-		log.Printf("Some error expected %s", err)
-		os.Exit(1)
+		log.Fatalf("Some error expected %s", err)
 	}
 
 	if len(matches) == 0 {
-		log.Printf("No any file found for pattern %s", args.pattern)
-		os.Exit(1)
+		log.Fatalf("No any file found for pattern %s", args.pattern)
 	}
 
 	lineChan := make(chan string)
