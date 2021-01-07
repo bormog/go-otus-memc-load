@@ -50,10 +50,10 @@ type arguments struct {
 type results struct {
 	sync.Mutex
 	processed int
-	errors int
+	errors    int
 }
 
-func (r *results) Add (p int, e int ) {
+func (r *results) Add(p int, e int) {
 	r.Lock()
 	r.processed += p
 	r.errors += e
@@ -87,7 +87,6 @@ func parseArguments() arguments {
 
 	return args
 }
-
 
 func setupLog(logfile string) {
 	if logfile == "" {
@@ -267,7 +266,7 @@ func getMemcacheClientMap(args arguments) map[string]*memcache.Client {
 func dotRenameFile(filePath string, dryRun bool) {
 	path, name := filepath.Split(filePath)
 	if dryRun == false {
-		err := os.Rename(filePath, filepath.Join(path, "." + name))
+		err := os.Rename(filePath, filepath.Join(path, "."+name))
 		if err != nil {
 			log.Printf("Cant rename file %s, err = %s", filePath, err)
 		}
@@ -275,7 +274,6 @@ func dotRenameFile(filePath string, dryRun bool) {
 }
 
 func main() {
-	// todo readme
 
 	start := time.Now()
 
