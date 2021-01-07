@@ -48,8 +48,7 @@ type arguments struct {
 
 	workersCount int
 
-	memcTimeout      int
-	memcMaxIdleConns int
+	memcTimeout int
 }
 
 type results struct {
@@ -72,9 +71,31 @@ func (r *results) ErrorRate() float64 {
 	return float64(r.errors) / float64(r.processed)
 }
 
+type MemcachePool struct {
+	clients map[string]*memcache.Client
+}
+
+func NewMemcachePool(addresses map[string]string, timeout int, maxIdleConns int) *MemcachePool {
+	clients := make(map[string]*memcache.Client)
+	for name, address := range addresses {
+		clients[name] = memcache.New(address)
+		clients[name].Timeout = time.Duration(timeout) * time.Millisecond
+		clients[name].MaxIdleConns = maxIdleConns
+	}
+	return &MemcachePool{clients: clients}
+}
+
+func (mp *MemcachePool) Get(name string) (*memcache.Client, error) {
+	client, ok := mp.clients[name]
+	if ok == false {
+		return nil, errors.New(fmt.Sprintf("Client not found by name %s", name))
+	}
+	return client, nil
+}
+
 func parseArguments() arguments {
 	args := arguments{}
-	flag.BoolVar(&args.dryRun, "dry", true, "dry run")
+	flag.BoolVar(&args.dryRun, "dry", false, "dry run")
 	flag.StringVar(&args.log, "log", "", "log file")
 
 	flag.StringVar(&args.pattern, "pattern", "./data/appsinstalled/[^.]*.tsv.gz", "pattern for files")
@@ -154,7 +175,7 @@ func parseDeviceApplications(line string) (*deviceApplications, error) {
 	}, nil
 }
 
-func insertDeviceApplications(app *deviceApplications, memcacheClient *memcache.Client) error {
+func insertDeviceApplications(app *deviceApplications, memc *memcache.Client) error {
 	var err error
 
 	key := fmt.Sprintf("%s:%s", app.deviceType, app.deviceType)
@@ -166,7 +187,7 @@ func insertDeviceApplications(app *deviceApplications, memcacheClient *memcache.
 
 	delay := initRetryDelay
 	for attempt := 0; attempt < maxRetryCount; attempt++ {
-		err = memcacheClient.Set(&memcache.Item{Key: key, Value: packed})
+		err = memc.Set(&memcache.Item{Key: key, Value: packed})
 		if err == nil {
 			break
 		}
@@ -181,7 +202,7 @@ func insertDeviceApplications(app *deviceApplications, memcacheClient *memcache.
 	return nil
 }
 
-func producer(filePath string, out chan string, i int) {
+func producer(filePath string, output chan string, i int) {
 	log.Printf("[%d] Processing file: %s", i, filePath)
 
 	file, err := os.Open(filePath)
@@ -203,7 +224,7 @@ func producer(filePath string, out chan string, i int) {
 	count := 0
 	scanner := bufio.NewScanner(gz)
 	for scanner.Scan() {
-		out <- scanner.Text()
+		output <- scanner.Text()
 		count += 1
 	}
 
@@ -214,11 +235,11 @@ func producer(filePath string, out chan string, i int) {
 	log.Printf("[%d] finish processing file %s, lines read = %d", i, filePath, count)
 }
 
-func consumer(in chan string, memcMap map[string]*memcache.Client, result *results, i int, dryRun bool) {
+func consumer(input chan string, mp *MemcachePool, result *results, i int, dryRun bool) {
 	var totalCount int
 	var errorCount int
 
-	for line := range in {
+	for line := range input {
 		totalCount += 1
 		app, err := parseDeviceApplications(line)
 		if err != nil {
@@ -228,12 +249,12 @@ func consumer(in chan string, memcMap map[string]*memcache.Client, result *resul
 		}
 
 		if dryRun == false {
-			memcClient, ok := memcMap[app.deviceType]
-			if ok == false {
-				log.Printf("[%d] memc client not found for device type = %s", i, app.deviceType)
+			memc, err := mp.Get(app.deviceType)
+			if err != nil {
+				log.Printf("[%d] err = ", err)
 			}
 
-			err = insertDeviceApplications(app, memcClient)
+			err = insertDeviceApplications(app, memc)
 			if err != nil {
 				errorCount += 1
 				log.Printf("[%d], memc err = %s", i, err)
@@ -246,23 +267,6 @@ func consumer(in chan string, memcMap map[string]*memcache.Client, result *resul
 	}
 	result.Inc(totalCount, errorCount)
 	log.Printf("[%d] processed %d lines, %d errors", i, totalCount, errorCount)
-}
-
-func newMemcacheClient(address string, maxIdleConns int, timeout int) *memcache.Client {
-	client := memcache.New(address)
-	client.MaxIdleConns = maxIdleConns
-	client.Timeout = time.Duration(timeout) * time.Millisecond
-	return client
-}
-
-func getMemcacheClientMap(args arguments) map[string]*memcache.Client {
-	memcacheMap := make(map[string]*memcache.Client)
-	memcMaxIdleConns := 2 * args.workersCount
-	memcacheMap["idfa"] = newMemcacheClient(args.idfa, memcMaxIdleConns, args.memcTimeout)
-	memcacheMap["gaid"] = newMemcacheClient(args.gaid, memcMaxIdleConns, args.memcTimeout)
-	memcacheMap["adid"] = newMemcacheClient(args.adid, memcMaxIdleConns, args.memcTimeout)
-	memcacheMap["dvid"] = newMemcacheClient(args.dvid, memcMaxIdleConns, args.memcTimeout)
-	return memcacheMap
 }
 
 func dotRenameFile(filePath string, dryRun bool) {
@@ -282,6 +286,13 @@ func main() {
 	args := parseArguments()
 	setupLog(args.log)
 
+	addresses := map[string]string{
+		"idfa": args.idfa,
+		"gaid": args.gaid,
+		"adid": args.adid,
+		"dvid": args.dvid,
+	}
+
 	log.Printf("Memc loader started with options: %+v", args)
 
 	matches, err := filepath.Glob(args.pattern)
@@ -300,7 +311,7 @@ func main() {
 
 	result := &results{}
 
-	memcMap := getMemcacheClientMap(args)
+	mp := NewMemcachePool(addresses, args.memcTimeout, 2*args.workersCount)
 
 	for i, filePath := range matches {
 		wp.Add(1)
@@ -314,7 +325,7 @@ func main() {
 	for i := 0; i < workersCount; i++ {
 		wc.Add(1)
 		go func(i int) {
-			consumer(lineChan, memcMap, result, i, args.dryRun)
+			consumer(lineChan, mp, result, i, args.dryRun)
 			wc.Done()
 		}(i)
 	}
