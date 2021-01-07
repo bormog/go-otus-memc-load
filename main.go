@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"github.com/bradfitz/gomemcache/memcache"
 	"github.com/golang/protobuf/proto"
+	"io"
 	"log"
 	"memc-load/appsinstalled"
 	"os"
@@ -85,6 +86,25 @@ func parseArguments() arguments {
 	flag.Parse()
 
 	return args
+}
+
+
+func setupLog(logfile string) {
+	if logfile == "" {
+		return
+	}
+	f, err := os.OpenFile(logfile, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0644)
+	if err != nil {
+		log.Fatalf("Cant open log file %s, err = %s", logfile, err)
+	}
+
+	defer func() {
+		if err := f.Close(); err != nil {
+			log.Printf("Cant close file %s, err = %s", logfile, err)
+		}
+	}()
+
+	log.SetOutput(io.MultiWriter(os.Stdout, f))
 }
 
 func parseDeviceApplications(line string) (*deviceApplications, error) {
@@ -255,12 +275,13 @@ func dotRenameFile(filePath string, dryRun bool) {
 }
 
 func main() {
-	// todo write log in file
 	// todo readme
 
 	start := time.Now()
 
 	args := parseArguments()
+	setupLog(args.log)
+
 	log.Printf("Memc loader started with options: %+v", args)
 
 	matches, err := filepath.Glob(args.pattern)
