@@ -151,8 +151,7 @@ func insertDeviceApplications(app *deviceApplications, memcacheClient *memcache.
 	}
 
 	if err != nil {
-		log.Print(err)
-		return errors.New(fmt.Sprintf("Failed to set value in memcache after %d attempts", maxRetryCount))
+		return errors.New(fmt.Sprintf("Failed to set value in memcache after %d attempts, err = %s", maxRetryCount, err))
 	}
 
 	return nil
@@ -287,17 +286,17 @@ func main() {
 	for i, filePath := range matches {
 		wp.Add(1)
 		go func(f string, c chan string, i int) {
-			defer wp.Done()
-			defer dotRenameFile(f, args.dryRun)
 			producer(f, c, i)
+			dotRenameFile(f, args.dryRun)
+			wp.Done()
 		}(filePath, lineChan, i)
 	}
 
 	for i := 0; i < workersCount; i++ {
 		wc.Add(1)
 		go func(i int) {
-			defer wc.Done()
 			consumer(lineChan, memcMap, result, i, args.dryRun)
+			wc.Done()
 		}(i)
 	}
 
