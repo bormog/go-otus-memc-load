@@ -37,6 +37,39 @@ type deviceApplications struct {
 	apps       []uint32
 }
 
+func (app *deviceApplications) Insert(mp *MemcachePool, dryRun bool) error {
+	var err error
+	memc, err := mp.Get(app.deviceType)
+	if err != nil {
+		return err
+	}
+
+	key := fmt.Sprintf("%s:%s", app.deviceType, app.deviceType)
+	userApps := &appsinstalled.UserApps{Lat: &app.lat, Lon: &app.lat, Apps: app.apps}
+	packed, err := proto.Marshal(userApps)
+	if err != nil {
+		return errors.New(fmt.Sprintf("Failed proto marshal, err %s", err))
+	}
+
+	if dryRun == false {
+		delay := initRetryDelay
+		for attempt := 0; attempt < maxRetryCount; attempt++ {
+			err = memc.Set(&memcache.Item{Key: key, Value: packed})
+			if err == nil {
+				break
+			}
+			delay = 2*delay + rand.Intn(50)
+			time.Sleep(time.Duration(delay) * time.Millisecond)
+		}
+	}
+
+	if err != nil {
+		return errors.New(fmt.Sprintf("Failed to set value in memcache after %d attempts, err = %s", maxRetryCount, err))
+	}
+
+	return nil
+}
+
 type arguments struct {
 	dryRun       bool
 	log          string
@@ -88,7 +121,7 @@ func (mp *MemcachePool) Get(name string) (*memcache.Client, error) {
 	return client, nil
 }
 
-type MemcPump struct {
+type MemcachePump struct {
 	buff       []*deviceApplications
 	maxSize    int
 	errorCount int
@@ -96,9 +129,9 @@ type MemcPump struct {
 	mp         *MemcachePool
 }
 
-func NewMemcPump(mp *MemcachePool, maxSize int, dryRun bool) *MemcPump {
+func NewMemcachePump(mp *MemcachePool, maxSize int, dryRun bool) *MemcachePump {
 	var buff []*deviceApplications
-	return &MemcPump{
+	return &MemcachePump{
 		buff:       buff,
 		maxSize:    maxSize,
 		errorCount: 0,
@@ -107,88 +140,36 @@ func NewMemcPump(mp *MemcachePool, maxSize int, dryRun bool) *MemcPump {
 	}
 }
 
-func (p *MemcPump) Add(app *deviceApplications) {
+func (p *MemcachePump) Add(app *deviceApplications) {
 	p.buff = append(p.buff, app)
 	if len(p.buff) == p.maxSize {
 		p.Drain()
 	}
 }
 
-func (p *MemcPump) Drain() []error {
+func (p *MemcachePump) Drain() []error {
 	var output []error
-	if p.dryRun == false {
-		ch := make(chan error)
-		for _, app := range p.buff {
-			memc, err := p.mp.Get(app.deviceType)
-			if err != nil {
-				log.Printf("[%d] err = ", err)
-				continue
-			}
-			go func(a *deviceApplications, m *memcache.Client) {
-				ch <- insertDeviceApplications(a, m)
-			}(app, memc)
-		}
+	ch := make(chan error)
+	for _, app := range p.buff {
+		go func(a *deviceApplications) {
+			ch <- a.Insert(p.mp, p.dryRun)
+		}(app)
+	}
 
-		for range p.buff {
-			err := <-ch
-			if err != nil {
-				p.errorCount++
-			}
-			output = append(output, err)
+	for range p.buff {
+		err := <-ch
+		if err != nil {
+			p.errorCount++
 		}
+		output = append(output, err)
 	}
 	p.buff = nil
 	return output
 
 }
 
-func (p *MemcPump) GetErrorCount() int {
+func (p *MemcachePump) GetErrorCount() int {
 	return p.errorCount
-}
-
-func parseArguments() arguments {
-	args := arguments{}
-	flag.BoolVar(&args.dryRun, "dry", false, "dry run")
-	flag.StringVar(&args.log, "log", "", "log file")
-
-	flag.StringVar(&args.pattern, "pattern", "./data/appsinstalled/[^.]*.tsv.gz", "pattern for files")
-
-	idfa := flag.String("idfa", "127.0.0.1:33013", "idfa memcache address")
-	gaid := flag.String("gaid", "127.0.0.1:33014", "idfa memcache address")
-	adid := flag.String("adid", "127.0.0.1:33015", "idfa memcache address")
-	dvid := flag.String("dvid", "127.0.0.1:33016", "idfa memcache address")
-
-	flag.IntVar(&args.workersCount, "wc", runtime.NumCPU(), "workers count")
-	flag.IntVar(&args.memcTimeout, "timeout", 500, "memcache timeout in ms")
-
-	flag.Parse()
-
-	args.addresses = map[string]string{
-		"idfa": *idfa,
-		"gaid": *gaid,
-		"adid": *adid,
-		"dvid": *dvid,
-	}
-
-	return args
-}
-
-func setupLog(logfile string) {
-	if logfile == "" {
-		return
-	}
-	f, err := os.OpenFile(logfile, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0644)
-	if err != nil {
-		log.Fatalf("Cant open log file %s, err = %s", logfile, err)
-	}
-
-	defer func() {
-		if err := f.Close(); err != nil {
-			log.Printf("Cant close file %s, err = %s", logfile, err)
-		}
-	}()
-
-	log.SetOutput(io.MultiWriter(os.Stdout, f))
 }
 
 func parseDeviceApplications(line string) (*deviceApplications, error) {
@@ -234,33 +215,6 @@ func parseDeviceApplications(line string) (*deviceApplications, error) {
 	}, nil
 }
 
-func insertDeviceApplications(app *deviceApplications, memc *memcache.Client) error {
-	var err error
-
-	key := fmt.Sprintf("%s:%s", app.deviceType, app.deviceType)
-	userApps := &appsinstalled.UserApps{Lat: &app.lat, Lon: &app.lat, Apps: app.apps}
-	packed, err := proto.Marshal(userApps)
-	if err != nil {
-		return errors.New(fmt.Sprintf("Failed proto marshal, err %s", err))
-	}
-
-	delay := initRetryDelay
-	for attempt := 0; attempt < maxRetryCount; attempt++ {
-		err = memc.Set(&memcache.Item{Key: key, Value: packed})
-		if err == nil {
-			break
-		}
-		delay = 2*delay + rand.Intn(50)
-		time.Sleep(time.Duration(delay) * time.Millisecond)
-	}
-
-	if err != nil {
-		return errors.New(fmt.Sprintf("Failed to set value in memcache after %d attempts, err = %s", maxRetryCount, err))
-	}
-
-	return nil
-}
-
 func producer(filePath string, output chan string, i int) {
 	log.Printf("[%d] Processing file: %s", i, filePath)
 
@@ -297,7 +251,7 @@ func producer(filePath string, output chan string, i int) {
 func consumer(input chan string, mp *MemcachePool, result *results, i int, dryRun bool) {
 	var totalCount int
 	var errorCount int
-	pump := NewMemcPump(mp, maxBuffSize, dryRun)
+	pump := NewMemcachePump(mp, maxBuffSize, dryRun)
 
 	for line := range input {
 		totalCount += 1
@@ -328,6 +282,51 @@ func dotRenameFile(filePath string, dryRun bool) {
 			log.Printf("Cant rename file %s, err = %s", filePath, err)
 		}
 	}
+}
+
+func setupLog(logfile string) {
+	if logfile == "" {
+		return
+	}
+	f, err := os.OpenFile(logfile, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0644)
+	if err != nil {
+		log.Fatalf("Cant open log file %s, err = %s", logfile, err)
+	}
+
+	defer func() {
+		if err := f.Close(); err != nil {
+			log.Printf("Cant close file %s, err = %s", logfile, err)
+		}
+	}()
+
+	log.SetOutput(io.MultiWriter(os.Stdout, f))
+}
+
+func parseArguments() arguments {
+	args := arguments{}
+	flag.BoolVar(&args.dryRun, "dry", false, "dry run")
+	flag.StringVar(&args.log, "log", "", "log file")
+
+	flag.StringVar(&args.pattern, "pattern", "./data/appsinstalled/[^.]*.tsv.gz", "pattern for files")
+
+	idfa := flag.String("idfa", "127.0.0.1:33013", "idfa memcache address")
+	gaid := flag.String("gaid", "127.0.0.1:33014", "idfa memcache address")
+	adid := flag.String("adid", "127.0.0.1:33015", "idfa memcache address")
+	dvid := flag.String("dvid", "127.0.0.1:33016", "idfa memcache address")
+
+	flag.IntVar(&args.workersCount, "wc", runtime.NumCPU(), "workers count")
+	flag.IntVar(&args.memcTimeout, "timeout", 500, "memcache timeout in ms")
+
+	flag.Parse()
+
+	args.addresses = map[string]string{
+		"idfa": *idfa,
+		"gaid": *gaid,
+		"adid": *adid,
+		"dvid": *dvid,
+	}
+
+	return args
 }
 
 func main() {
