@@ -37,7 +37,7 @@ type deviceApps struct {
 	apps       []uint32
 }
 
-func (app *deviceApps) Insert(mp *MemcachePool, dryRun bool) error {
+func (app *deviceApps) Insert(mp *memcPool, dryRun bool) error {
 	var err error
 	memc, err := mp.Get(app.deviceType)
 	if err != nil {
@@ -99,21 +99,21 @@ func (r *results) ErrorRate() float64 {
 	return float64(r.errors) / float64(r.processed)
 }
 
-type MemcachePool struct {
+type memcPool struct {
 	clients map[string]*memcache.Client
 }
 
-func NewMemcachePool(addresses map[string]string, timeout int, maxIdleConns int) *MemcachePool {
+func newMemcPool(addresses map[string]string, timeout int, maxIdleConns int) *memcPool {
 	clients := make(map[string]*memcache.Client)
 	for name, address := range addresses {
 		clients[name] = memcache.New(address)
 		clients[name].Timeout = time.Duration(timeout) * time.Millisecond
 		clients[name].MaxIdleConns = maxIdleConns
 	}
-	return &MemcachePool{clients: clients}
+	return &memcPool{clients: clients}
 }
 
-func (mp *MemcachePool) Get(name string) (*memcache.Client, error) {
+func (mp *memcPool) Get(name string) (*memcache.Client, error) {
 	client, ok := mp.clients[name]
 	if ok == false {
 		return nil, errors.New(fmt.Sprintf("Client not found by name %s", name))
@@ -121,17 +121,17 @@ func (mp *MemcachePool) Get(name string) (*memcache.Client, error) {
 	return client, nil
 }
 
-type MemcachePump struct {
+type memcPump struct {
 	buff       []*deviceApps
 	maxSize    int
 	errorCount int
 	dryRun     bool
-	pool       *MemcachePool
+	pool       *memcPool
 }
 
-func NewMemcachePump(pool *MemcachePool, maxSize int, dryRun bool) *MemcachePump {
+func newMemcPump(pool *memcPool, maxSize int, dryRun bool) *memcPump {
 	var buff []*deviceApps
-	return &MemcachePump{
+	return &memcPump{
 		buff:       buff,
 		maxSize:    maxSize,
 		errorCount: 0,
@@ -140,14 +140,14 @@ func NewMemcachePump(pool *MemcachePool, maxSize int, dryRun bool) *MemcachePump
 	}
 }
 
-func (p *MemcachePump) Add(app *deviceApps) {
+func (p *memcPump) Add(app *deviceApps) {
 	p.buff = append(p.buff, app)
 	if len(p.buff) == p.maxSize {
 		p.Drain()
 	}
 }
 
-func (p *MemcachePump) Drain() []error {
+func (p *memcPump) Drain() []error {
 	var output []error
 	ch := make(chan error)
 	for _, app := range p.buff {
@@ -168,7 +168,7 @@ func (p *MemcachePump) Drain() []error {
 
 }
 
-func (p *MemcachePump) GetErrorCount() int {
+func (p *memcPump) GetErrorCount() int {
 	return p.errorCount
 }
 
@@ -248,10 +248,10 @@ func producer(filePath string, output chan string, i int) {
 	log.Printf("[%d] finish processing file %s, lines read = %d", i, filePath, count)
 }
 
-func consumer(input chan string, mp *MemcachePool, result *results, i int, dryRun bool) {
+func consumer(input chan string, mp *memcPool, result *results, i int, dryRun bool) {
 	var totalCount int
 	var errorCount int
-	pump := NewMemcachePump(mp, maxBuffSize, dryRun)
+	pump := newMemcPump(mp, maxBuffSize, dryRun)
 
 	for line := range input {
 		totalCount += 1
@@ -304,7 +304,7 @@ func setupLog(logfile string) {
 
 func parseArguments() arguments {
 	args := arguments{}
-	flag.BoolVar(&args.dryRun, "dry", false, "dry run")
+	flag.BoolVar(&args.dryRun, "dry", true, "dry run")
 	flag.StringVar(&args.log, "log", "", "log file")
 
 	flag.StringVar(&args.pattern, "pattern", "./data/appsinstalled/[^.]*.tsv.gz", "pattern for files")
@@ -354,7 +354,7 @@ func main() {
 
 	result := &results{}
 
-	mp := NewMemcachePool(args.addresses, args.memcTimeout, maxConnections)
+	mp := newMemcPool(args.addresses, args.memcTimeout, maxConnections)
 
 	for i, filePath := range matches {
 		wp.Add(1)
