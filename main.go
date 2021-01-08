@@ -29,7 +29,7 @@ const (
 	maxConnections  = 1024
 )
 
-type deviceApplications struct {
+type deviceApps struct {
 	deviceType string
 	deviceId   string
 	lat        float64
@@ -37,7 +37,7 @@ type deviceApplications struct {
 	apps       []uint32
 }
 
-func (app *deviceApplications) Insert(mp *MemcachePool, dryRun bool) error {
+func (app *deviceApps) Insert(mp *MemcachePool, dryRun bool) error {
 	var err error
 	memc, err := mp.Get(app.deviceType)
 	if err != nil {
@@ -122,25 +122,25 @@ func (mp *MemcachePool) Get(name string) (*memcache.Client, error) {
 }
 
 type MemcachePump struct {
-	buff       []*deviceApplications
+	buff       []*deviceApps
 	maxSize    int
 	errorCount int
 	dryRun     bool
-	mp         *MemcachePool
+	pool       *MemcachePool
 }
 
-func NewMemcachePump(mp *MemcachePool, maxSize int, dryRun bool) *MemcachePump {
-	var buff []*deviceApplications
+func NewMemcachePump(pool *MemcachePool, maxSize int, dryRun bool) *MemcachePump {
+	var buff []*deviceApps
 	return &MemcachePump{
 		buff:       buff,
 		maxSize:    maxSize,
 		errorCount: 0,
 		dryRun:     dryRun,
-		mp:         mp,
+		pool:       pool,
 	}
 }
 
-func (p *MemcachePump) Add(app *deviceApplications) {
+func (p *MemcachePump) Add(app *deviceApps) {
 	p.buff = append(p.buff, app)
 	if len(p.buff) == p.maxSize {
 		p.Drain()
@@ -151,8 +151,8 @@ func (p *MemcachePump) Drain() []error {
 	var output []error
 	ch := make(chan error)
 	for _, app := range p.buff {
-		go func(a *deviceApplications) {
-			ch <- a.Insert(p.mp, p.dryRun)
+		go func(a *deviceApps) {
+			ch <- a.Insert(p.pool, p.dryRun)
 		}(app)
 	}
 
@@ -172,7 +172,7 @@ func (p *MemcachePump) GetErrorCount() int {
 	return p.errorCount
 }
 
-func parseDeviceApplications(line string) (*deviceApplications, error) {
+func parseDeviceApplications(line string) (*deviceApps, error) {
 	parts := strings.Split(strings.TrimSpace(line), "\t")
 	if len(parts) != 5 {
 		return nil, errors.New(fmt.Sprintf("lenght of parts not equal 5. Actual lengh is %d", len(parts)))
@@ -206,7 +206,7 @@ func parseDeviceApplications(line string) (*deviceApplications, error) {
 		}
 		apps = append(apps, uint32(appId))
 	}
-	return &deviceApplications{
+	return &deviceApps{
 		deviceType: deviceType,
 		deviceId:   deviceId,
 		lat:        lat,
