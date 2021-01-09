@@ -61,10 +61,10 @@ func (app *deviceApps) Insert(mp *memcPool, dryRun bool) error {
 			delay = 2*delay + rand.Intn(50)
 			time.Sleep(time.Duration(delay) * time.Millisecond)
 		}
-	}
 
-	if err != nil {
-		return errors.New(fmt.Sprintf("Failed to set value in memcache after %d attempts, err = %s", maxRetryCount, err))
+		if err != nil {
+			return errors.New(fmt.Sprintf("Failed to set value in memcache after %d attempts, err = %s", maxRetryCount, err))
+		}
 	}
 
 	return nil
