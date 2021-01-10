@@ -39,7 +39,7 @@ type deviceApps struct {
 
 func (app *deviceApps) Insert(mp *memcPool, dryRun bool) error {
 	var err error
-	memc, err := mp.Get(app.deviceType)
+	client, err := mp.Get(app.deviceType)
 	if err != nil {
 		return err
 	}
@@ -54,7 +54,7 @@ func (app *deviceApps) Insert(mp *memcPool, dryRun bool) error {
 	if dryRun == false {
 		delay := initRetryDelay
 		for attempt := 0; attempt < maxRetryCount; attempt++ {
-			err = memc.Set(&memcache.Item{Key: key, Value: packed})
+			err = client.Set(&memcache.Item{Key: key, Value: packed})
 			if err == nil {
 				break
 			}
