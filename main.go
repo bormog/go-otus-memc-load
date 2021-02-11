@@ -116,7 +116,7 @@ func (p *memcPump) Add(app *deviceApps) {
 
 func (p *memcPump) Drain() []error {
 	var output []error
-	ch := make(chan error)
+	ch := make(chan error, p.maxSize)
 	for _, app := range p.buff {
 		go func(a *deviceApps) {
 			ch <- insertDeviceApps(a, p.pool, p.dryRun)
@@ -304,7 +304,7 @@ func setupLog(logfile string) {
 
 func parseArguments() arguments {
 	args := arguments{}
-	flag.BoolVar(&args.dryRun, "dry", false, "dry run")
+	flag.BoolVar(&args.dryRun, "dry", true, "dry run")
 	flag.StringVar(&args.log, "log", "", "log file")
 
 	flag.StringVar(&args.pattern, "pattern", "./data/appsinstalled/[^.]*.tsv.gz", "pattern for files")
