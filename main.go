@@ -29,47 +29,6 @@ const (
 	maxConnections  = 1024
 )
 
-type deviceApps struct {
-	deviceType string
-	deviceId   string
-	lat        float64
-	lon        float64
-	apps       []uint32
-}
-
-func (app *deviceApps) Insert(mp *memcPool, dryRun bool) error {
-	var err error
-	client, err := mp.Get(app.deviceType)
-	if err != nil {
-		return err
-	}
-
-	key := fmt.Sprintf("%s:%s", app.deviceType, app.deviceType)
-	userApps := &appsinstalled.UserApps{Lat: &app.lat, Lon: &app.lat, Apps: app.apps}
-	packed, err := proto.Marshal(userApps)
-	if err != nil {
-		return errors.New(fmt.Sprintf("Failed proto marshal, err %s", err))
-	}
-
-	if dryRun == false {
-		delay := initRetryDelay
-		for attempt := 0; attempt < maxRetryCount; attempt++ {
-			err = client.Set(&memcache.Item{Key: key, Value: packed})
-			if err == nil {
-				break
-			}
-			delay = 2*delay + rand.Intn(50)
-			time.Sleep(time.Duration(delay) * time.Millisecond)
-		}
-
-		if err != nil {
-			return errors.New(fmt.Sprintf("Failed to set value in memcache after %d attempts, err = %s", maxRetryCount, err))
-		}
-	}
-
-	return nil
-}
-
 type arguments struct {
 	dryRun       bool
 	log          string
@@ -83,6 +42,26 @@ type results struct {
 	sync.Mutex
 	processed int
 	errors    int
+}
+
+type deviceApps struct {
+	deviceType string
+	deviceId   string
+	lat        float64
+	lon        float64
+	apps       []uint32
+}
+
+type memcPool struct {
+	clients map[string]*memcache.Client
+}
+
+type memcPump struct {
+	buff       []*deviceApps
+	maxSize    int
+	errorCount int
+	dryRun     bool
+	pool       *memcPool
 }
 
 func (r *results) Inc(processed int, errors int) {
@@ -99,10 +78,6 @@ func (r *results) ErrorRate() float64 {
 	return float64(r.errors) / float64(r.processed)
 }
 
-type memcPool struct {
-	clients map[string]*memcache.Client
-}
-
 func newMemcPool(addresses map[string]string, timeout int, maxIdleConns int) *memcPool {
 	clients := make(map[string]*memcache.Client)
 	for name, address := range addresses {
@@ -116,17 +91,9 @@ func newMemcPool(addresses map[string]string, timeout int, maxIdleConns int) *me
 func (mp *memcPool) Get(name string) (*memcache.Client, error) {
 	client, ok := mp.clients[name]
 	if ok == false {
-		return nil, errors.New(fmt.Sprintf("Client not found by name %s", name))
+		return nil, fmt.Errorf("client not found by name %s", name)
 	}
 	return client, nil
-}
-
-type memcPump struct {
-	buff       []*deviceApps
-	maxSize    int
-	errorCount int
-	dryRun     bool
-	pool       *memcPool
 }
 
 func newMemcPump(pool *memcPool, maxSize int, dryRun bool) *memcPump {
@@ -152,7 +119,7 @@ func (p *memcPump) Drain() []error {
 	ch := make(chan error)
 	for _, app := range p.buff {
 		go func(a *deviceApps) {
-			ch <- a.Insert(p.pool, p.dryRun)
+			ch <- insertDeviceApps(a, p.pool, p.dryRun)
 		}(app)
 	}
 
@@ -175,7 +142,7 @@ func (p *memcPump) GetErrorCount() int {
 func parseDeviceApplications(line string) (*deviceApps, error) {
 	parts := strings.Split(strings.TrimSpace(line), "\t")
 	if len(parts) != 5 {
-		return nil, errors.New(fmt.Sprintf("lenght of parts not equal 5. Actual lengh is %d", len(parts)))
+		return nil, fmt.Errorf("lenght of parts not equal 5. Actual lengh is %d", len(parts))
 	}
 	deviceType, deviceId := parts[0], parts[1]
 
@@ -213,6 +180,39 @@ func parseDeviceApplications(line string) (*deviceApps, error) {
 		lon:        lon,
 		apps:       apps,
 	}, nil
+}
+
+func insertDeviceApps(app *deviceApps, mp *memcPool, dryRun bool) error {
+	var err error
+	client, err := mp.Get(app.deviceType)
+	if err != nil {
+		return err
+	}
+
+	key := fmt.Sprintf("%s:%s", app.deviceType, app.deviceType)
+	userApps := &appsinstalled.UserApps{Lat: &app.lat, Lon: &app.lat, Apps: app.apps}
+	packed, err := proto.Marshal(userApps)
+	if err != nil {
+		return fmt.Errorf("failed proto marshal, err %s", err)
+	}
+
+	if dryRun == false {
+		delay := initRetryDelay
+		for attempt := 0; attempt < maxRetryCount; attempt++ {
+			err = client.Set(&memcache.Item{Key: key, Value: packed})
+			if err == nil {
+				break
+			}
+			delay = 2*delay + rand.Intn(50)
+			time.Sleep(time.Duration(delay) * time.Millisecond)
+		}
+
+		if err != nil {
+			return fmt.Errorf("failed to set value in memcache after %d attempts, err = %s", maxRetryCount, err)
+		}
+	}
+
+	return nil
 }
 
 func producer(filePath string, output chan string, i int) {
