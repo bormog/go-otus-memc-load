@@ -304,7 +304,7 @@ func setupLog(logfile string) {
 
 func parseArguments() arguments {
 	args := arguments{}
-	flag.BoolVar(&args.dryRun, "dry", true, "dry run")
+	flag.BoolVar(&args.dryRun, "dry", false, "dry run")
 	flag.StringVar(&args.log, "log", "", "log file")
 
 	flag.StringVar(&args.pattern, "pattern", "./data/appsinstalled/[^.]*.tsv.gz", "pattern for files")
@@ -347,7 +347,7 @@ func main() {
 		log.Fatalf("No any file found for pattern %s", args.pattern)
 	}
 
-	lineChan := make(chan string)
+	lineChan := make(chan string, 1000 * args.workersCount)
 	var workersCount = args.workersCount
 	var wp sync.WaitGroup
 	var wc sync.WaitGroup
